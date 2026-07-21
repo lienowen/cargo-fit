@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { level001 } from '../src/content/level-001';
 import { level002 } from '../src/content/level-002';
+import { level003 } from '../src/content/level-003';
 import { GameState, validateLevel } from '../src/domain/game';
 
 describe('level content', () => {
   it('passes structural validation for every level', () => {
     expect(validateLevel(level001)).toEqual([]);
     expect(validateLevel(level002)).toEqual([]);
+    expect(validateLevel(level003)).toEqual([]);
   });
 });
 
@@ -57,5 +59,22 @@ describe('cargo placement domain', () => {
 
     expect(game.isComplete()).toBe(true);
     expect(events.at(-1)).toEqual({ type: 'LevelCompleted', moveCount: 6 });
+  });
+
+  it('completes the rotation sample with deterministic turns', () => {
+    const game = new GameState(level003);
+    game.place('beam.001', { column: 0, row: 0 });
+    game.place('beam.002', { column: 5, row: 0 });
+
+    for (const pieceId of ['wide.001', 'wide.002', 'wide.003', 'wide.004']) {
+      game.rotate(pieceId);
+    }
+    game.place('wide.001', { column: 1, row: 0 });
+    game.place('wide.002', { column: 3, row: 0 });
+    game.place('wide.003', { column: 1, row: 3 });
+    const events = game.place('wide.004', { column: 3, row: 3 });
+
+    expect(game.isComplete()).toBe(true);
+    expect(events.at(-1)).toEqual({ type: 'LevelCompleted', moveCount: 10 });
   });
 });
