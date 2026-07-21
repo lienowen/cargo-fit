@@ -9,7 +9,7 @@ interface PieceView {
 
 export class GameScene extends Phaser.Scene {
   private readonly boardX = 141;
-  private readonly boardY = 172;
+  private readonly boardY = 162;
   private readonly cellSize = 78;
   private readonly trayScale = 0.43;
   private readonly pieceViews = new Map<string, PieceView>();
