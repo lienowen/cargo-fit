@@ -1,9 +1,5 @@
-import type { CargoPrototype, GridCell, LevelDefinition } from '../domain/game';
-
-const rectangle = (columns: number, rows: number): readonly GridCell[] =>
-  Array.from({ length: rows }, (_, row) =>
-    Array.from({ length: columns }, (_, column) => ({ column, row })),
-  ).flat();
+import type { CargoPrototype, LevelDefinition } from '../domain/game';
+import { rectangle } from './shapes';
 
 const prototypes: readonly CargoPrototype[] = [
   { id: 'cargo.crate.3x4', label: 'Large crate', color: 0xe58f3c, cells: rectangle(3, 4) },
@@ -14,9 +10,12 @@ const prototypes: readonly CargoPrototype[] = [
 export const level001: LevelDefinition = {
   schemaVersion: 1,
   id: 'level.001',
+  title: 'First Delivery',
+  objective: 'Pack every crate into the truck without overlap.',
   columns: 6,
   rows: 8,
   prototypes,
+  rules: [],
   cargo: [
     { id: 'cargo.001', prototypeId: 'cargo.crate.3x4' },
     { id: 'cargo.002', prototypeId: 'cargo.crate.3x4' },
