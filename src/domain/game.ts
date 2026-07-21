@@ -1,4 +1,6 @@
 export type Rotation = 0 | 1 | 2 | 3;
+export type CargoTrait = 'heavy' | 'fragile';
+export type PlacementRuleType = 'NoHeavyAboveFragile';
 
 export interface GridCell {
   readonly column: number;
@@ -10,6 +12,7 @@ export interface CargoPrototype {
   readonly cells: readonly GridCell[];
   readonly label: string;
   readonly color: number;
+  readonly traits?: readonly CargoTrait[];
 }
 
 export interface CargoInstanceDefinition {
@@ -18,13 +21,21 @@ export interface CargoInstanceDefinition {
   readonly initialRotation?: Rotation;
 }
 
+export interface PlacementRuleDefinition {
+  readonly id: string;
+  readonly type: PlacementRuleType;
+}
+
 export interface LevelDefinition {
   readonly schemaVersion: 1;
   readonly id: string;
+  readonly title: string;
+  readonly objective: string;
   readonly columns: number;
   readonly rows: number;
   readonly cargo: readonly CargoInstanceDefinition[];
   readonly prototypes: readonly CargoPrototype[];
+  readonly rules: readonly PlacementRuleDefinition[];
 }
 
 export interface Placement {
@@ -51,6 +62,7 @@ export type DomainEvent =
   | { readonly type: 'CargoRotated'; readonly pieceId: string }
   | { readonly type: 'MoveUndone' }
   | { readonly type: 'LevelRestarted' }
+  | { readonly type: 'LevelChanged'; readonly levelId: string }
   | { readonly type: 'LevelCompleted'; readonly moveCount: number }
   | { readonly type: 'CommandRejected'; readonly reason: string };
 
@@ -58,7 +70,28 @@ export type GameCommand =
   | { readonly type: 'PlaceCargo'; readonly pieceId: string; readonly column: number; readonly row: number }
   | { readonly type: 'RotateCargo'; readonly pieceId: string }
   | { readonly type: 'Undo' }
-  | { readonly type: 'Restart' };
+  | { readonly type: 'Restart' }
+  | { readonly type: 'NextLevel' };
+
+interface OccupiedCell extends GridCell {
+  readonly pieceId: string;
+  readonly prototype: CargoPrototype;
+}
+
+type PlacementRuleValidator = (cells: readonly OccupiedCell[]) => string | null;
+
+const placementRuleValidators: Record<PlacementRuleType, PlacementRuleValidator> = {
+  NoHeavyAboveFragile: (cells) => {
+    const heavyCells = cells.filter((cell) => cell.prototype.traits?.includes('heavy'));
+    const fragileCells = cells.filter((cell) => cell.prototype.traits?.includes('fragile'));
+
+    const unsafe = heavyCells.some((heavy) =>
+      fragileCells.some((fragile) => heavy.column === fragile.column && heavy.row < fragile.row),
+    );
+
+    return unsafe ? 'Heavy cargo cannot be placed above fragile cargo.' : null;
+  },
+};
 
 const normalizeCells = (cells: readonly GridCell[]): GridCell[] => {
   const minColumn = Math.min(...cells.map((cell) => cell.column));
@@ -79,6 +112,8 @@ export const rotateCells = (cells: readonly GridCell[], rotation: Rotation): Gri
 export const validateLevel = (level: LevelDefinition): readonly string[] => {
   const errors: string[] = [];
   if (level.schemaVersion !== 1) errors.push('Unsupported level schema version.');
+  if (!level.id.trim()) errors.push('Level id is required.');
+  if (!level.title.trim()) errors.push('Level title is required.');
   if (level.columns <= 0 || level.rows <= 0) errors.push('Board dimensions must be positive.');
 
   const prototypeIds = new Set<string>();
@@ -86,6 +121,12 @@ export const validateLevel = (level: LevelDefinition): readonly string[] => {
     if (prototypeIds.has(prototype.id)) errors.push(`Duplicate prototype id: ${prototype.id}`);
     prototypeIds.add(prototype.id);
     if (prototype.cells.length === 0) errors.push(`Prototype ${prototype.id} has no cells.`);
+    if (new Set(prototype.traits).size !== (prototype.traits?.length ?? 0)) {
+      errors.push(`Prototype ${prototype.id} has duplicate traits.`);
+    }
+    if (prototype.traits?.includes('heavy') && prototype.traits.includes('fragile')) {
+      errors.push(`Prototype ${prototype.id} cannot be both heavy and fragile.`);
+    }
   }
 
   const instanceIds = new Set<string>();
@@ -96,6 +137,13 @@ export const validateLevel = (level: LevelDefinition): readonly string[] => {
     const prototype = level.prototypes.find((candidate) => candidate.id === piece.prototypeId);
     if (!prototype) errors.push(`Cargo ${piece.id} references missing prototype ${piece.prototypeId}.`);
     else totalArea += prototype.cells.length;
+  }
+
+  const ruleIds = new Set<string>();
+  for (const rule of level.rules) {
+    if (ruleIds.has(rule.id)) errors.push(`Duplicate rule id: ${rule.id}`);
+    ruleIds.add(rule.id);
+    if (!(rule.type in placementRuleValidators)) errors.push(`Unsupported placement rule: ${String(rule.type)}`);
   }
 
   if (totalArea !== level.columns * level.rows) {
@@ -165,7 +213,7 @@ export class GameState {
     const rotated = { ...piece, rotation: nextRotation };
     if (piece.placement) {
       const rejection = this.placementError(rotated, piece.placement);
-      if (rejection) return [{ type: 'CommandRejected', reason: 'Not enough room to rotate here.' }];
+      if (rejection) return [{ type: 'CommandRejected', reason: rejection }];
     }
 
     this.replacePiece(rotated);
@@ -189,7 +237,8 @@ export class GameState {
   }
 
   private placementError(piece: PieceState, placement: Placement): string | null {
-    const targetCells = this.cellsFor(piece).map((cell) => ({
+    const candidate = { ...piece, placement: { ...placement } };
+    const targetCells = this.cellsFor(candidate).map((cell) => ({
       column: placement.column + cell.column,
       row: placement.row + cell.row,
     }));
@@ -209,7 +258,27 @@ export class GameState {
     if (targetCells.some((cell) => occupied.has(`${cell.column}:${cell.row}`))) {
       return 'Cargo cannot overlap another item.';
     }
+
+    const occupiedCells = this.occupiedCells(candidate);
+    for (const rule of this.level.rules) {
+      const rejection = placementRuleValidators[rule.type](occupiedCells);
+      if (rejection) return rejection;
+    }
     return null;
+  }
+
+  private occupiedCells(candidate: PieceState): readonly OccupiedCell[] {
+    const pieces = this.pieces.map((piece) => (piece.id === candidate.id ? candidate : piece));
+    return pieces.flatMap((piece) => {
+      if (!piece.placement) return [];
+      const prototype = this.getPrototype(piece.prototypeId);
+      return this.cellsFor(piece).map((cell) => ({
+        column: piece.placement!.column + cell.column,
+        row: piece.placement!.row + cell.row,
+        pieceId: piece.id,
+        prototype,
+      }));
+    });
   }
 
   private replacePiece(next: PieceState): void {
